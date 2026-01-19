@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vehicle Status</title>
+
+  <!-- Bootstrap 5 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- DataTables Core CSS -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+  <!-- DataTables Buttons CSS -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.4.2/css/buttons.bootstrap5.min.css">
+
+  <style>
+    body { background: #f8f9fa; }
+    h2 { color: #0d6efd; }
+    table.dataTable tbody tr:hover { background-color: #d6e0f0; }
+    thead input { width: 100%; padding: 3px; box-sizing: border-box; }
+    .dt-buttons { margin-bottom: 10px; }
+    #loader {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 9999;
+    }
+    .assigned { background-color: #fff3cd !important; font-weight: bold; }
+    .gps-btn, .map-btn { min-width: 50px; }
+    .copy-cell { cursor: pointer; color: #0d6efd; text-decoration: underline; }
+    .copy-tooltip { position: absolute; background: #333; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 12px; display: none; z-index: 10000; }
+  </style>
+</head>
+<body>
+  <div class="container" style="max-width: 1400px;">
+    <h2 class="mb-4 text-center">🚗 Vehicle Status by Case ID</h2>
+
+    <div class="row mb-3">
+      <div class="col-md-4">
+        <input type="text" id="caseIdInput" class="form-control" placeholder="Enter Case ID">
+      </div>
+      <div class="col-md-4 d-flex align-items-center">
+        <button id="loadBtn" class="btn btn-primary me-3">Load Vehicles</button>
+        <div id="assignedInfo" class="fw-bold text-warning"></div>
+      </div>
+    </div>
+
+    <!-- Loader -->
+    <div id="loader">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+    </div>
+
+    <div class="table-responsive">
+      <table id="vehicleTable" class="table table-striped table-bordered table-hover" style="width:100%">
+        <thead class="table-dark">
+          <tr>
+            <th>Sr No</th>
+            <th>Call ID</th>
+            <th>Call Time</th>
+            <th>Vehicle Type</th>
+            <th>Vehicle No</th>
+            <th>Base Location</th>
+            <th>Status</th>
+            <th>Assigned Time</th>
+            <th>Incident Lat, Lng</th>
+            <th>Vehicle Lat, Lng</th>
+            <th>Distance (km)</th>
+            <th>GPS</th>
+            <th>Google Distance</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="tooltip" class="copy-tooltip">Copied!</div>
+  </div>
+
+  <!-- JS Dependencies -->
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/dataTables.buttons.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.bootstrap5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.html5.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.print.min.js"></script>
+
+  <script>
+    let dataTable;
+
+    // Format date + time string into “DD-MM-YYYY hh:mm AM/PM”
+    function formatDateTime(dateString) {
+      if (!dateString) return '-';
+      const d = new Date(dateString);
+
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+
+      let hours = d.getHours();
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12; // hour “0” becomes “12”
+      const hoursStr = String(hours).padStart(2, '0');
+
+      return `${dd}-${mm}-${yyyy} ${hoursStr}:${minutes} ${ampm}`;
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+      const caseId = document.getElementById('caseIdInput').value.trim();
+      const loader = document.getElementById('loader');
+      const assignedInfo = document.getElementById('assignedInfo');
+
+      if (!caseId) {
+        alert('Please enter a Case ID');
+        return;
+      }
+
+      loader.style.display = 'block';
+      assignedInfo.textContent = '';
+
+      try {
+        const res = await fetch(`http://192.168.200.52:3001/api/vehicles/${caseId}`);
+        if (!res.ok) throw new Error('Failed to fetch data');
+        const data = await res.json();
+
+        let srNo = 1;
+        let assignedRows = [];
+
+        const rows = data.vehicles
+          .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+          .map(vehicle => {
+            const statusClass = vehicle.StatusVehicle === 'Available'
+              ? 'text-success fw-bold'
+              : 'text-danger fw-bold';
+
+            const highlightClass = vehicle.assigned_vehicle_id ? 'assigned' : '';
+            if (highlightClass) assignedRows.push(srNo);
+
+            const callTimeStr = vehicle.call_time ? formatDateTime(vehicle.call_time) : '-';
+            const assignedTimeStr = vehicle.assigned_time ? formatDateTime(vehicle.assigned_time) : '-';
+
+            const vehicleID = vehicle.vehicle_no ?? '';
+const gpsButton = `<button class="btn btn-sm btn-info gps-btn" onclick="openGPS('${vehicleID}', '${callTimeStr}', '${callTimeStr}')">GPS</button>`;
+
+            const incidentCoords = `${vehicle.incident_latitude ?? '-'}, ${vehicle.incident_longitude ?? '-'}`;
+            const vehicleCoords = `${vehicle.vehicle_latitude ?? '-'}, ${vehicle.vehicle_longitude ?? '-'}`;
+            const incidentCell = `<span class="copy-cell" onclick="copyToClipboard('${incidentCoords}', event)">${incidentCoords}</span>`;
+            const vehicleCell = `<span class="copy-cell" onclick="copyToClipboard('${vehicleCoords}', event)">${vehicleCoords}</span>`;
+
+            let mapLink = '';
+            if (vehicle.incident_latitude != null && vehicle.vehicle_latitude != null) {
+              mapLink = `<a class="btn btn-sm btn-outline-primary map-btn" href="https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(vehicle.incident_latitude + ',' + vehicle.incident_longitude)}&destination=${encodeURIComponent(vehicle.vehicle_latitude + ',' + vehicle.vehicle_longitude)}" target="_blank">Map</a>`;
+            }
+
+            return [
+              srNo++,
+              vehicle.callid,
+              callTimeStr,
+              vehicle.vehicle_type ?? '-',
+              vehicle.vehicle_no ?? '-',
+              vehicle.base_location ?? '-',
+              `<span class="${statusClass}">${vehicle.StatusVehicle}</span>`,
+              assignedTimeStr,
+              incidentCell,
+              vehicleCell,
+              vehicle.distance ?? '-',
+              gpsButton,
+              mapLink,
+              highlightClass
+            ];
+          });
+
+        if (assignedRows.length) {
+          assignedInfo.textContent = `Assigned Vehicles Highlighted (row nos): ${assignedRows.join(', ')}`;
+        }
+
+        if ($.fn.DataTable.isDataTable('#vehicleTable')) {
+          dataTable.clear().destroy();
+        }
+
+        dataTable = $('#vehicleTable').DataTable({
+          data: rows,
+          columns: [
+            { title: "Sr No" },
+            { title: "Call ID" },
+            { title: "Call Time" },
+            { title: "Vehicle Type" },
+            { title: "Vehicle No" },
+            { title: "Base Location" },
+            { title: "Status" },
+            { title: "Assigned Time" },
+            { title: "Incident Lat, Lng" },
+            { title: "Vehicle Lat, Lng" },
+            { title: "Distance (km)" },
+            { title: "GPS" },
+            { title: "Google Distance" }
+          ],
+          dom: 'Bfrtip',
+          buttons: [
+            { extend: 'copyHtml5', text: '📋 Copy' },
+            { extend: 'csvHtml5', text: '🧾 CSV' },
+            { extend: 'excelHtml5', text: '📊 Excel' },
+            { extend: 'pdfHtml5', text: '📄 PDF' },
+            { extend: 'print', text: '🖨️ Print' }
+          ],
+          responsive: true,
+          lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
+          pageLength: 50,
+          order: [[10, 'asc']], // Sort by “Distance (km)”
+          rowCallback: function(row, data) {
+            if (data[13]) $(row).addClass(data[13]);
+          },
+          initComplete: function(){
+            this.api().columns().every(function(){
+              const column = this;
+              // add custom filtering per column here if desired
+            });
+          }
+        });
+
+      } catch (err) {
+        console.error(err);
+        alert('Error loading vehicles. Check console.');
+      } finally {
+        loader.style.display = 'none';
+      }
+    });
+
+// Convert "DD-MM-YYYY hh:mm AM/PM" → "YYYY-MM-DD HH:MM:SS"
+function convertToGlovisionFormat(dt) {
+  if (!dt) return "";
+
+  // Decode if encoded
+  dt = decodeURIComponent(dt);
+
+  // Trim spaces
+  dt = dt.trim();
+
+  // Expected format: "26-11-2025 10:37 AM"
+  const parts = dt.split(" ");
+  if (parts.length !== 3) {
+    console.error("Invalid date format received:", dt);
+    return "";
+  }
+
+  const [datePart, timePart, ampm] = parts;
+  const dateSplit = datePart.split("-");
+  if (dateSplit.length !== 3) {
+    console.error("Invalid DATE part:", datePart);
+    return "";
+  }
+
+  const [dd, mm, yyyy] = dateSplit;
+
+  const timeSplit = timePart.split(":");
+  if (timeSplit.length !== 2) {
+    console.error("Invalid TIME part:", timePart);
+    return "";
+  }
+
+  let [hh, min] = timeSplit;
+
+  // Convert to 24-hour format
+  hh = parseInt(hh);
+  if (ampm.toUpperCase() === "PM" && hh !== 12) hh += 12;
+  if (ampm.toUpperCase() === "AM" && hh === 12) hh = 0;
+
+  hh = String(hh).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:00`;
+}
+
+
+function openGPS(vehicleID, fromdate, todate) {
+  const formattedFrom = convertToGlovisionFormat(fromdate);
+  const formattedTo = convertToGlovisionFormat(todate);
+
+  const url = `https://rj.glovision.co/gvkrajasthan/php/tripMap.php?accountID=gvkrajasthan&vehicleID=${encodeURIComponent(vehicleID)}&fromdate=${encodeURIComponent(formattedFrom)}&todate=${encodeURIComponent(formattedTo)}&onlyidles=no&request=itself&stoppage=0&timeinterval=0&overspeed=0&ignition=no&mainpower=no&bn=&bc=`;
+
+  window.open(url, '_blank');
+}
+
+
+
+
+    function copyToClipboard(text, event) {
+      navigator.clipboard.writeText(text).then(() => {
+        const tooltip = document.getElementById('tooltip');
+        tooltip.style.display = 'block';
+        tooltip.style.left = event.pageX + 'px';
+        tooltip.style.top = event.pageY + 'px';
+        setTimeout(() => { tooltip.style.display = 'none'; }, 1000);
+      });
+    }
+  </script>
+</body>
+</html>
