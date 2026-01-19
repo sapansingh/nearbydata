@@ -131,7 +131,7 @@
       assignedInfo.textContent = '';
 
       try {
-        const res = await fetch(`http://192.168.200.52:3001/api/vehicles/${caseId}`);
+        const res = await fetch(`http://192.168.200.11:3001/api/vehicles/${caseId}`);
         if (!res.ok) throw new Error('Failed to fetch data');
         const data = await res.json();
 
